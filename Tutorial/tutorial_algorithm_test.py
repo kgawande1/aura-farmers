@@ -1,7 +1,7 @@
 from datamodel import Order, OrderDepth, TradingState
 from typing import List, Dict
-from logger import flush
 
+# First Submission
 class Trader:
 
     def run(self, state: TradingState):
@@ -37,7 +37,6 @@ class Trader:
                         orders.append(Order(product, bid_price, -sell_qty))
 
             result[product] = orders
-        
-        flush()
+
 
         return result, conversions, traderData
