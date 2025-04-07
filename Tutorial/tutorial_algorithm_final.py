@@ -10,6 +10,67 @@ import jsonpickle # type: ignore
 
 class Trader:
 
+    def get_fair_value_with_error(self, product, price_cache) -> float:
+
+        default_value: float = 0.0
+        diff: int = 1
+        max_ticks: int = 5
+        
+        if product not in price_cache or len(price_cache[product]) <= 2 * max_ticks:
+            if product in price_cache:
+                return price_cache[product][-1]
+            else:
+                return default_value
+            
+        prices = np.array(price_cache[product])
+        diffed_prices = np.diff(prices, n=diff)
+
+        n = len(diffed_prices)
+
+        e = np.zeros(n)
+        beta = np.zeros(max_ticks * 2)
+        n_iter = 10
+        tolerance = 1e-6
+
+        for iteration in range(n_iter):
+
+            X = []
+            y = []
+
+            for t in range(max_ticks, n):
+
+                ar_terms = diffed_prices[t-max_ticks:t][::-1]
+                ma_terms = e[t-max_ticks:t][::-1]
+
+                X.append(np.concatenate([ar_terms, ma_terms]))
+                y.append(diffed_prices[t])
+
+            X = np.array(X)
+            y = np.array(y)
+
+            beta_new, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
+
+            if np.linalg.norm(beta_new - beta) < tolerance:
+                beta = beta_new
+                break
+
+            beta = beta_new
+
+            for t in range(max_ticks, n):
+                ar_val = np.dot(beta[:max_ticks], diffed_prices[t-max_ticks:t][::-1]) if max_ticks > 0 else 0.0
+                ma_val = np.dot(beta[max_ticks:], e[t-max_ticks:t][::-1]) if max_ticks > 0 else 0.0
+                e[t] = diffed_prices[t] - (ar_val + ma_val)
+
+        last_ar = diffed_prices[-max_ticks:][::-1]
+        last_ma = e[-q:][::-1]
+
+        regressor = np.concatenate([last_ar, last_ma])
+        forecast_diff = np.diff(beta, regressor)
+
+        forecast_price = prices[-1] + forecast_diff
+
+        return forecast_price
+
     def get_fair_value(self, product, price_cache) -> float:
 
         default_value: float = 0.0
