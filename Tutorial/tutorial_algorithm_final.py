@@ -62,7 +62,7 @@ class Trader:
                     position -= sell_qty
 
         return orders
-
+    
     def trade_kelp(self, product, order_depth, state, price_cache, window_size=10) -> List[Order]:
 
         orders = []
