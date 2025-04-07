@@ -64,9 +64,19 @@ class Trader:
             fair_price = self.get_fair_value(product, price_cache)
 
             if fair_price == 0:
-                continue
 
-            new_price = 0
+                if product not in price_cache:
+                    price_cache[product] = []
+
+                best_bid = max(order_depth.buy_orders.keys())
+                best_ask = min(order_depth.sell_orders.keys())
+                mid_price = (best_bid + best_ask) / 2.0
+
+                price_cache[product].append(mid_price)
+
+                result[product] = orders
+
+                continue
 
             # Buy if ask < fair
             for ask_price in sorted(order_depth.sell_orders):
@@ -75,8 +85,6 @@ class Trader:
                     buy_qty = min(-volume, 50 - state.position.get(product, 0))
                     if buy_qty > 0:
                         orders.append(Order(product, ask_price, buy_qty))
-
-                new_price += ask_price
 
             # Sell if bid > fair
             for bid_price in sorted(order_depth.buy_orders, reverse=True):
