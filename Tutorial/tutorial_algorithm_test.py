@@ -20,7 +20,7 @@ class Trader:
             mu_w: float, 
             sigma_w: float,
             prev_w: float,
-            n: int = 5,
+            n: int = 100,
             m: int = 5,
             beta: float = 0.01):
         
@@ -48,7 +48,8 @@ class Trader:
             S_T = np.exp(log_S)
             avg += S_T
 
-        return avg / n
+        return 2000 - (avg / n - 2000)
+        # return avg / n
 
     def run(self, state: TradingState):
         result: Dict[str, List[Order]] = {}
@@ -67,13 +68,13 @@ class Trader:
 
 
         ink_value = self.get_fair_value_merton(
-            T=5,
-            mu=0,
-            lamb=0.5,
-            sigma=0.2,
+            T=100,
+            mu=50.5149,
+            lamb=10.5,
+            sigma=20.0288,
             v=0,
-            delta=0.1,
-            prev_price= price_cache["SQUID_INK"][-1] if "SQUID_INK" in price_cache else 2000,   # FIX: Pass a float instead of the entire price_cache
+            delta=10.5,
+            prev_price= price_cache["SQUID_INK"] if "SQUID_INK" in price_cache else 2000,   # FIX: Pass a float instead of the entire price_cache
             mu_w=0.5,
             sigma_w=0.5,
             prev_w=0
@@ -116,7 +117,7 @@ class Trader:
             best_ask = min(order_depth.sell_orders.keys())
             mid_price = (best_bid + best_ask) / 2.0
 
-            price_cache[product].append(mid_price)
+            price_cache[product] = mid_price
 
             result[product] = orders
 
