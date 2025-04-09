@@ -20,6 +20,7 @@ def get_fair_value_merton(
     # m -> number of future walk
 
     kappa = np.exp(v + 0.5 * pow(delta, 2)) - 1
+    avg = 0
 
     for _ in range(n):
 
@@ -40,3 +41,18 @@ def get_fair_value_merton(
         avg += S_T
 
     return avg / n
+
+x = get_fair_value_merton(
+            T=5,
+            mu=0.05149140923172328,
+            lamb=0.5,
+            sigma=0.028816650240054118,
+            v=0.5,
+            delta=0.06548459284153497,
+            prev_price= 2000,   # FIX: Pass a float instead of the entire price_cache
+            mu_w=0.5,
+            sigma_w=0.5,
+            prev_w=0
+)
+
+print(x)

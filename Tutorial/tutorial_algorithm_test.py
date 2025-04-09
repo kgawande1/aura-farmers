@@ -1,18 +1,88 @@
 from datamodel import Order, OrderDepth, TradingState
 from typing import List, Dict
+import numpy as np
+import types
+import jsonpickle
+
 
 # First Submission
 class Trader:
+
+    def get_fair_value_merton(
+            self,
+            T: float,
+            mu: float, 
+            lamb: float, 
+            sigma: float, 
+            v: float,
+            delta: float, 
+            prev_price: float,
+            mu_w: float, 
+            sigma_w: float,
+            prev_w: float,
+            n: int = 5,
+            m: int = 5,
+            beta: float = 0.01):
+        
+        # n -> number of simulations
+        # m -> number of future walk
+
+        kappa = np.exp(v + 0.5 * pow(delta, 2)) - 1
+        avg = 0
+
+        for _ in range(n):
+
+            W_T = np.random.normal(0, np.sqrt(T)) # brownian motion
+
+            # Number of jumps (Poisson)
+            N_T = np.random.poisson(lamb * T)
+
+            # Sum of jump magnitudes (log-normal in log-space)
+            jump_sum = np.sum(np.random.normal(v, delta, size=N_T)) if N_T > 0 else 0.0
+
+            # Combine terms
+            drift = (mu - lamb * kappa - 0.5 * sigma**2) * T
+            diffusion = sigma * W_T
+
+            log_S = np.log(prev_price) + (drift + diffusion + jump_sum) / beta
+            S_T = np.exp(log_S)
+            avg += S_T
+
+        return avg / n
 
     def run(self, state: TradingState):
         result: Dict[str, List[Order]] = {}
         conversions = 0
         traderData = ""
 
+        try:
+            traderData = jsonpickle.decode(state.traderData)
+        except Exception as _:
+            traderData = {}
+
+        if traderData is None:
+            traderData = {}
+
+        price_cache = traderData["price_cache"] if "price_cache" in traderData else {}
+
+
+        ink_value = self.get_fair_value_merton(
+            T=5,
+            mu=0,
+            lamb=0.5,
+            sigma=0.2,
+            v=0,
+            delta=0.1,
+            prev_price= price_cache["SQUID_INK"][-1] if "SQUID_INK" in price_cache else 2000,   # FIX: Pass a float instead of the entire price_cache
+            mu_w=0.5,
+            sigma_w=0.5,
+            prev_w=0
+        )
         # Initial simple fair values for demo purposes
         fair_prices = {
             "RAINFOREST_RESIN": 10000,
-            "KELP": 10000
+            "KELP": 10000,
+            "SQUID_INK": ink_value
         }
 
         for product in state.order_depths:
@@ -38,5 +108,21 @@ class Trader:
 
             result[product] = orders
 
+
+            if product not in price_cache:
+                price_cache[product] = []
+
+            best_bid = max(order_depth.buy_orders.keys())
+            best_ask = min(order_depth.sell_orders.keys())
+            mid_price = (best_bid + best_ask) / 2.0
+
+            price_cache[product].append(mid_price)
+
+            result[product] = orders
+
+
+        traderData = jsonpickle.encode({
+            "price_cache": price_cache
+        })
 
         return result, conversions, traderData
