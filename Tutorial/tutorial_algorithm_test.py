@@ -3,10 +3,25 @@ from typing import List, Dict
 import numpy as np
 import types
 import jsonpickle
-
+from collections import deque
 
 # First Submission
 class Trader:
+
+    def exponential_moving_average(self, prices, alpha=0.3):
+        ema = prices[0]
+        for price in prices[1:]:
+            ema = alpha * price + (1 - alpha) * ema
+        return ema
+    
+    def get_trend(self, prices):
+        if len(prices) < 2:
+            return 0
+        x = np.arange(len(prices))
+        y = np.array(prices)
+
+        slope, _ = np.polyfit(x, y, 1)
+        return slope
 
     def get_fair_value_merton(
             self,
@@ -16,13 +31,11 @@ class Trader:
             sigma: float, 
             v: float,
             delta: float, 
-            prev_price: float,
-            mu_w: float, 
+            prev_prices: List[float],
+            mu_w: float,
             sigma_w: float,
-            prev_w: float,
             n: int = 100,
-            m: int = 5,
-            beta: float = 0.01):
+            beta: float = 2):
         
         # n -> number of simulations
         # m -> number of future walk
@@ -30,7 +43,19 @@ class Trader:
         kappa = np.exp(v + 0.5 * pow(delta, 2)) - 1
         avg = 0
 
-        for _ in range(n):
+        # get average price
+        # weights = np.random.normal(loc=mu_w, scale=sigma_w, size=len(prev_prices))
+        # weights = np.ones(shape=len(prev_prices))
+        # normalized_weights = weights / np.sum(weights)
+
+        # prev_price = np.dot(normalized_weights, prev_prices)
+
+        ema = self.exponential_moving_average(prices=prev_prices)
+        trend = self.get_trend(prices=prev_prices)
+
+        prev_price = ema + trend * 3
+
+        for i in range(n):
 
             W_T = np.random.normal(0, np.sqrt(T)) # brownian motion
 
@@ -44,7 +69,7 @@ class Trader:
             drift = (mu - lamb * kappa - 0.5 * sigma**2) * T
             diffusion = sigma * W_T
 
-            log_S = np.log(prev_price) + (drift + diffusion + jump_sum) / beta
+            log_S = np.log(prev_price) + (drift + diffusion + jump_sum) * beta
             S_T = np.exp(log_S)
             avg += S_T
 
@@ -55,6 +80,8 @@ class Trader:
         result: Dict[str, List[Order]] = {}
         conversions = 0
         traderData = ""
+
+        k = 200 # window size for merton estimation
 
         try:
             traderData = jsonpickle.decode(state.traderData)
@@ -69,15 +96,14 @@ class Trader:
 
         ink_value = self.get_fair_value_merton(
             T=100,
-            mu=50.5149,
-            lamb=10.5,
-            sigma=20.0288,
+            mu=0.00032542,
+            lamb=0.000223,
+            sigma=0.0003324,
             v=0,
-            delta=10.5,
-            prev_price= price_cache["SQUID_INK"] if "SQUID_INK" in price_cache else 2000,   # FIX: Pass a float instead of the entire price_cache
+            delta=0.00006245,
+            prev_prices= list(price_cache["SQUID_INK"]) if "SQUID_INK" in price_cache else [2000],   # FIX: Pass a float instead of the entire price_cache
             mu_w=0.5,
             sigma_w=0.5,
-            prev_w=0
         )
         # Initial simple fair values for demo purposes
         fair_prices = {
@@ -111,13 +137,17 @@ class Trader:
 
 
             if product not in price_cache:
-                price_cache[product] = []
+                price_cache[product] = deque()
 
             best_bid = max(order_depth.buy_orders.keys())
             best_ask = min(order_depth.sell_orders.keys())
             mid_price = (best_bid + best_ask) / 2.0
 
-            price_cache[product] = mid_price
+            if len(price_cache[product]) < k:
+                price_cache[product].append(mid_price)
+            else:
+                price_cache[product].popleft()
+                price_cache[product].append(mid_price)
 
             result[product] = orders
 
