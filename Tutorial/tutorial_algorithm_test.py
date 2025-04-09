@@ -22,7 +22,7 @@ class Trader:
             prev_w: float,
             n: int = 100,
             m: int = 5,
-            beta: float = 0.01):
+            beta: float = 1.00):
         
         # n -> number of simulations
         # m -> number of future walk
@@ -44,7 +44,7 @@ class Trader:
             drift = (mu - lamb * kappa - 0.5 * sigma**2) * T
             diffusion = sigma * W_T
 
-            log_S = np.log(prev_price) + (drift + diffusion + jump_sum) / beta
+            log_S = np.log(prev_price) + (drift + diffusion + jump_sum) * beta
             S_T = np.exp(log_S)
             avg += S_T
 
@@ -68,12 +68,12 @@ class Trader:
 
 
         ink_value = self.get_fair_value_merton(
-            T=100,
-            mu=50.5149,
-            lamb=10.5,
-            sigma=20.0288,
-            v=0,
-            delta=10.5,
+            T=5,
+            mu=0.0325,#does
+            lamb=0.0000000001,
+            sigma=0.0009,#does
+            v=0.0000000,
+            delta=5.000000,
             prev_price= price_cache["SQUID_INK"] if "SQUID_INK" in price_cache else 2000,   # FIX: Pass a float instead of the entire price_cache
             mu_w=0.5,
             sigma_w=0.5,
