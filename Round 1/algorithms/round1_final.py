@@ -5,6 +5,8 @@ from abc import abstractmethod
 from collections import deque
 from datamodel import Listing, Observation, Order, OrderDepth, ProsperityEncoder, Symbol, Trade, TradingState
 from typing import Any, TypeAlias
+import numpy as np
+import jsonpickle
 
 JSON: TypeAlias = dict[str, "JSON"] | list["JSON"] | str | int | float | bool | None
 
@@ -239,14 +241,79 @@ class KelpStrategy(MarketMakingStrategy):
 # STILL NEED TO CHANGE 
 class SquidInkStrategy(MarketMakingStrategy):
     def get_true_value(self, state: TradingState) -> int:
-        order_depth = state.order_depths[self.symbol]
-        buy_orders = sorted(order_depth.buy_orders.items(), reverse=True)
-        sell_orders = sorted(order_depth.sell_orders.items())
+        try:
+            traderData = jsonpickle.decode(state.traderData)
+        except Exception as _:
+            traderData = {}
 
-        popular_buy_price = max(buy_orders, key=lambda tup: tup[1])[0]
-        popular_sell_price = min(sell_orders, key=lambda tup: tup[1])[0]
+        if traderData is None:
+            traderData = {}
 
-        return round((popular_buy_price + popular_sell_price) / 2)
+        price_cache = traderData["price_cache"] if "price_cache" in traderData else {}
+        
+        def get_fair_value_merton(
+            T: float,
+            mu: float, 
+            lamb: float, 
+            sigma: float, 
+            v: float,
+            delta: float, 
+            prev_price: float,
+            mu_w: float, 
+            sigma_w: float,
+            prev_w: float,
+            n: int = 100,
+            m: int = 5,
+            beta: float = 0.47):
+        
+        # n -> number of simulations
+        # m -> number of future walk
+
+            kappa = np.exp(v + 0.5 * pow(delta, 2)) - 1
+            avg = 0
+
+            for _ in range(n):
+
+                W_T = np.random.normal(0, np.sqrt(T)) # brownian motion
+
+                # Number of jumps (Poisson)
+                N_T = np.random.poisson(lamb * T)
+
+                # Sum of jump magnitudes (log-normal in log-space)
+                jump_sum = np.sum(np.random.normal(v, delta, size=N_T)) if N_T > 0 else 0.0
+
+                # Combine terms
+                drift = (mu - lamb * kappa - 0.5 * sigma**2) * T
+                diffusion = sigma * W_T
+
+                log_S = np.log(prev_price) + (drift + diffusion + jump_sum) * beta
+                S_T = np.exp(log_S)
+                avg += S_T
+
+            return 2000 - (avg / n - 2000)
+        ink_value = get_fair_value_merton(
+            T=5,
+            mu=0.0336,#does
+            lamb=0.0000000001,
+            sigma=0.000009,#does
+            v=1.0000000,
+            delta=5.000000,
+            prev_price= price_cache["SQUID_INK"] if "SQUID_INK" in price_cache else 2000,   # FIX: Pass a float instead of the entire price_cache
+            mu_w=0.5,
+            sigma_w=0.5,
+            prev_w=0)
+        if "SQUID_INK" not in price_cache:
+            price_cache["SQUID_INK"] = []
+        order_depth: OrderDepth = state.order_depths["SQUID_INK"]
+        best_bid = max(order_depth.buy_orders.keys())
+        best_ask = min(order_depth.sell_orders.keys())
+        mid_price = (best_bid + best_ask) / 2
+
+        price_cache["SQUID_INK"] = mid_price
+        traderData = jsonpickle.encode({
+            "price_cache": price_cache
+        })
+        return round(ink_value)
 
 class Trader:
     def __init__(self) -> None:
@@ -266,7 +333,7 @@ class Trader:
         logger.print(state.position)
 
         conversions = 0
-
+        
         old_trader_data = json.loads(state.traderData) if state.traderData != "" else {}
         new_trader_data = {}
 
@@ -279,8 +346,10 @@ class Trader:
                 orders[symbol] = strategy.run(state)
 
             new_trader_data[symbol] = strategy.save()
+            
 
         trader_data = json.dumps(new_trader_data, separators=(",", ":"))
+        
 
         logger.flush(state, orders, conversions, trader_data)
         return orders, conversions, trader_data
