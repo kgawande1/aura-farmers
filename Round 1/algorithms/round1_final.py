@@ -238,7 +238,7 @@ class KelpStrategy(MarketMakingStrategy):
 
         return round((popular_buy_price + popular_sell_price) / 2)
     
-# STILL NEED TO CHANGE 
+
 class SquidInkStrategy(MarketMakingStrategy):
     def get_true_value(self, state: TradingState) -> int:
         try:
