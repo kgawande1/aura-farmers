@@ -9,6 +9,7 @@ from collections import deque
 class Trader:
     def __init__(self):
         self.limit = 50
+        self.windows = {}
 
     def exponential_moving_average(self, prices, alpha=0.3):
         ema = prices[0]
@@ -75,11 +76,10 @@ class Trader:
             S_T = np.exp(log_S)
             avg += S_T
 
-        return 2000 - (avg / n - 2000)
+        return round(2000 - (avg / n - 2000))
         # return avg / n
 
     def get_kelp_fair_value(self, product, order_depths):
-
         buy_orders = sorted(order_depths.buy_orders.items(), reverse=True)
         sell_orders = sorted(order_depths.sell_orders.items())
 
@@ -90,109 +90,103 @@ class Trader:
 
 
     def market_making_strategy(self, product, orders, orders_depth, price_cache, position, window_size=10):
+        # === PERSISTENT WINDOW FOR LIQUIDATION DECISIONS ===
+        if product not in self.windows:
+            self.windows[product] = deque(maxlen=window_size)
+        window = self.windows[product]
 
-        window = deque(maxlen=10)
-
+        # === FAIR VALUE CALCULATION ===
         if product == "KELP":
             fair_value = self.get_kelp_fair_value(product, orders_depth)
         elif product == "SQUID_INK":
             fair_value = self.get_fair_value_merton(
                 T=5,
-                mu=0.0336,#does
+                mu=0.0336,
                 lamb=0.0000000001,
-                sigma=0.000009,#does
-                v=1.0000000,
-                delta=5.000000,
-                prev_prices= list(price_cache["SQUID_INK"]) if "SQUID_INK" in price_cache else [2000.0],   # FIX: Pass a float instead of the entire price_cache
+                sigma=0.000009,
+                v=1.0,
+                delta=5.0,
+                prev_prices=list(price_cache["SQUID_INK"]) if "SQUID_INK" in price_cache else [2000.0],
                 mu_w=0.5,
-                sigma_w=0.5)
-
+                sigma_w=0.5
+            )
         else:
             fair_value = 10000
 
-
+        # === ORDER BOOK ===
         buy_orders = sorted(orders_depth.buy_orders.items(), reverse=True)
         sell_orders = sorted(orders_depth.sell_orders.items())
 
         buy_amount = self.limit - position
         sell_amount = self.limit + position
 
-        closeToLimit = (abs(position) == self.limit)
-
-        window.append(closeToLimit)
-
-        if len(window) > window_size:
-            window.popleft()
+        close_to_limit = abs(position) == self.limit
+        window.append(close_to_limit)
 
         hard = len(window) == window_size and all(window)
         soft = len(window) == window_size and sum(window) >= window_size / 2 and window[-1]
 
-        if position > self.limit * 0.5:
-            max_buy = fair_value - 1
-        else:
-            max_buy = fair_value
+        max_buy = fair_value - 1 if position > self.limit * 0.5 else fair_value
+        min_sell = fair_value + 1 if position < self.limit * -0.5 else fair_value
 
-        if position > self.limit * -0.5:
-            min_sell = fair_value + 1
-        else:
-            min_sell = fair_value
+        # === DEBUG (OPTIONAL) ===
+        print(f"[{product}] pos={position} | fair={fair_value:.2f} | buy_amt={buy_amount} | sell_amt={sell_amount} | soft={soft} | hard={hard}")
 
-        # BUY
-        for price, volume in sell_orders:
-            if buy_amount > 0 and price <= max_buy:
-                quantity = min(buy_amount, -volume)
+        # === LAYERED BUY STRATEGY ===
+        levels = 3
+        if buy_amount > 0 and sell_orders:
+            for i in range(min(levels, len(sell_orders))):
+                price, volume = sell_orders[i]
+                if price <= max_buy:
+                    qty = min(buy_amount // (levels - i), -volume)
+                    if qty > 0:
+                        orders.append(Order(product, price, qty))
+                        buy_amount -= qty
 
-                orders.append(Order(product, price, quantity))
-                buy_amount -= quantity
-
-
+        # === FALLBACK BUYS ===
         if buy_amount > 0 and hard:
-            quantity = buy_amount // 2
-
-            orders.append(Order(product, fair_value - 2, quantity))
-            buy_amount -= quantity
+            qty = buy_amount // 2
+            orders.append(Order(product, fair_value - 2, qty))
+            buy_amount -= qty
 
         if buy_amount > 0 and soft:
-            quantity = buy_amount // 2
+            qty = buy_amount // 2
+            orders.append(Order(product, fair_value - 2, qty))
+            buy_amount -= qty
 
-            orders.append(Order(product, price, quantity))
-            buy_amount -= quantity
-
-        if buy_amount > 0:
-            popular_buy_price = max(buy_orders, key=lambda tup: tup[1])[0]
+        if buy_amount > 0 and buy_orders:
+            popular_buy_price = max(buy_orders, key=lambda x: x[1])[0]
             price = min(max_buy, popular_buy_price + 1)
             orders.append(Order(product, price, buy_amount))
 
+        # === LAYERED SELL STRATEGY ===
+        if sell_amount > 0 and buy_orders:
+            for i in range(min(levels, len(buy_orders))):
+                price, volume = buy_orders[i]
+                if price >= min_sell:
+                    qty = min(sell_amount // (levels - i), volume)
+                    if qty > 0:
+                        orders.append(Order(product, price, -qty))
+                        sell_amount -= qty
 
-
-        # SELL
-
-        for price, volume in buy_orders:
-            if sell_amount > 0 and price >= min_sell:
-                quantity = min(sell_amount, volume)
-                orders.append(Order(product, price, -quantity))
-                sell_amount -= quantity
-
+        # === FALLBACK SELLS ===
         if sell_amount > 0 and hard:
-            quantity = sell_amount // 2
-
-            orders.append(Order(product, fair_value + 2, -quantity))
-            sell_amount -= quantity
+            qty = sell_amount // 2
+            orders.append(Order(product, fair_value + 2, -qty))
+            sell_amount -= qty
 
         if sell_amount > 0 and soft:
-            quantity = sell_amount // 2
-            orders.append(Order(product, price, -quantity))
-            sell_amount -= quantity
+            qty = sell_amount // 2
+            orders.append(Order(product, fair_value + 2, -qty))
+            sell_amount -= qty
 
-        if sell_amount > 0:
-            popular_sell_price = min(sell_orders, key=lambda tup: tup[1])[0]
+        if sell_amount > 0 and sell_orders:
+            popular_sell_price = min(sell_orders, key=lambda x: x[1])[0]
             price = max(min_sell, popular_sell_price - 1)
             orders.append(Order(product, price, -sell_amount))
 
-
         return orders
 
-        
 
         
 
@@ -214,24 +208,6 @@ class Trader:
         price_cache = traderData["price_cache"] if "price_cache" in traderData else {}
 
 
-        ink_value = self.get_fair_value_merton(
-            T=100,
-            mu=0.00032542,
-            lamb=0.000223,
-            sigma=0.0003324,
-            v=0,
-            delta=0.00006245,
-            prev_prices= list(price_cache["SQUID_INK"]) if "SQUID_INK" in price_cache else [2000],   # FIX: Pass a float instead of the entire price_cache
-            mu_w=0.5,
-            sigma_w=0.5,
-        )
-
-        # Initial simple fair values for demo purposes
-        fair_prices = {
-            "RAINFOREST_RESIN": 10000,
-            "KELP": 10000,
-            "SQUID_INK": ink_value
-        }
 
         for product in state.order_depths:
 
