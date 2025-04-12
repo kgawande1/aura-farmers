@@ -144,6 +144,67 @@ class Strategy:
 class MarketMakingStrategy(Strategy):
     def __init__(self, symbol: Symbol, limit: int) -> None:
         super().__init__(symbol, limit)
+        self.window = deque()
+        self.window_size = 10
+
+    @abstractmethod
+    def get_true_value(self, state: TradingState) -> int:
+        raise NotImplementedError()
+
+    def act(self, state: TradingState) -> None:
+        true_value = self.get_true_value(state)
+        order_depth = state.order_depths[self.symbol]
+        buy_orders = sorted(order_depth.buy_orders.items(), reverse=True)
+        sell_orders = sorted(order_depth.sell_orders.items())
+
+        position = state.position.get(self.symbol, 0)
+        to_buy = self.limit - position
+        to_sell = self.limit + position
+
+        # Track if we're stuck at a limit
+        self.window.append(abs(position) == self.limit)
+        if len(self.window) > self.window_size:
+            self.window.popleft()
+
+        soft_liquidate = len(self.window) == self.window_size and sum(self.window) >= self.window_size // 2
+        hard_liquidate = all(self.window)
+
+        max_buy_price = true_value - 1 if position > self.limit * 0.5 else true_value
+        min_sell_price = true_value + 1 if position < -self.limit * 0.5 else true_value
+
+        # Hit best sells
+        for price, volume in sell_orders:
+            if to_buy > 0 and price <= max_buy_price:
+                qty = min(to_buy, -volume)
+                self.buy(price, qty)
+                to_buy -= qty
+
+        # Add buy liquidity if not fully filled
+        if to_buy > 0:
+            passive_buy_price = true_value - 2 if soft_liquidate else true_value - 1
+            self.buy(passive_buy_price, to_buy)
+
+        # Hit best buys
+        for price, volume in buy_orders:
+            if to_sell > 0 and price >= min_sell_price:
+                qty = min(to_sell, volume)
+                self.sell(price, qty)
+                to_sell -= qty
+
+        # Add sell liquidity if not fully filled
+        if to_sell > 0:
+            passive_sell_price = true_value + 2 if soft_liquidate else true_value + 1
+            self.sell(passive_sell_price, to_sell)
+
+    def save(self) -> JSON:
+        return list(self.window)
+
+    def load(self, data: JSON) -> None:
+        self.window = deque(data, maxlen=self.window_size)
+
+class MarketMakingStrategyResin(Strategy):
+    def __init__(self, symbol: Symbol, limit: int) -> None:
+        super().__init__(symbol, limit)
 
         self.window = deque()
         self.window_size = 10
@@ -215,13 +276,8 @@ class MarketMakingStrategy(Strategy):
             price = max(min_sell_price, popular_sell_price - 1)
             self.sell(price, to_sell)
 
-    def save(self) -> JSON:
-        return list(self.window)
 
-    def load(self, data: JSON) -> None:
-        self.window = deque(data)
-
-class RainforestResinStrategy(MarketMakingStrategy):
+class RainforestResinStrategy(MarketMakingStrategyResin):
     def get_true_value(self, state: TradingState) -> int:
         return 10000
 
