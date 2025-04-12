@@ -242,7 +242,7 @@ class DjembesStrategy(MarketMakingStrategy):
         self.brownian_variance_2 = 0
 
         # greeks
-        self.rho = 0          # correlation
+        self.rho = 0            # correlation
         self.kappa = 2.0        # mean reversion tendency
         self.theta = 0.2        # long term variance
         self.xi = 0.3           # volatility of the volatility
@@ -258,50 +258,90 @@ class DjembesStrategy(MarketMakingStrategy):
         except Exception as _:
             trader_data = {}
 
+        if trader_data is None:
+            trader_data = {}
+
         return trader_data["price_cache"] if "price_cache" in trader_data else {}
 
     def get_true_value(self, state: TradingState) -> int:
-
-        prices = self.get_price_cache(state=state)
         
-        # n is the number of future timesteps we want to predict
-        k = len(prices)
-        n = self.tiemsteps_into_future + k
-        predictions = np.full(n, np.nan)
-        predictions[:k] = prices[:k]
+        prices = self.get_price_cache(state=state)
 
-        # get the variance of the past k timesteps
-        log_returns = np.diff(np.log(prices[:k+1]))
-        v = np.full(n, np.nan)
-        v[:k] = np.var(log_returns) if len(log_returns) > 1 else self.placeholder_variance
+        if "DJEMBES" not in prices:
+            prices["DJEMBES"] = deque()
 
-        np.random.seed(self.random_seed)
+        history = list(prices["DJEMBES"])
 
-        for t in range(k, n):
+        def get_fair_value():
+            # n is the number of future timesteps we want to predict
+            k = len(history)
 
-            past_prices = prices[t-k:t]
-            past_returns = np.diff(np.log(past_prices))
-            v_mean = np.var(past_returns) if len(past_returns) > 1 else self.placeholder_variance
-            trend = (past_prices[-1] - past_prices[0]) / k
+            if k < 1:
+                print("hello")
+                return 13000
 
-            Z1 = np.random.normal(loc=self.brownian_mean_1, scale=self.brownian_variance_1)
-            Z2 = np.random.normal(loc=self.brownian_mean_2, scale=self.brownian_variance_2)
+            n = self.tiemsteps_into_future + k
+            predictions = np.full(n, np.nan)
+            predictions[:k] = list(history)
 
-            W1 = Z1
-            W2 = self.rho * Z1 + np.sqrt(1 - self.rho**2) * Z2
+            # get the variance of the past k timesteps
+            log_returns = np.diff(np.log(history[:k+1]))
+            v = np.full(n, np.nan)
+            v[:k] = np.var(log_returns) if len(log_returns) > 1 else self.placeholder_variance
 
-            dt = 1/n
-            v[t] = np.maximum(
-                v[t-1] + self.kappa * (self.theta - v[t-1]) * dt + self.xi * np.sqrt(np.max(v[t-1], 0)) * np.sqrt(dt) * W2,
-                0
-            )
+            np.random.seed(self.random_seed)
 
-            predictions[t] = predictions[t-1] * np.exp(
-                (self.r + 0.3 * trend / predictions[t-1] - 0.5 * v_mean) * dt +
-                np.sqrt(v_mean) * np.sqrt(dt) * W1
-            )
+            for t in range(k, n):
 
-        return predictions[-1] + self.bias
+                past_prices = history[t-k:t]
+                past_returns = np.diff(np.log(past_prices))
+                v_mean = np.var(past_returns) if len(past_returns) > 1 else self.placeholder_variance
+                trend = (past_prices[-1] - past_prices[0]) / k
+
+                Z1 = np.random.normal(loc=self.brownian_mean_1, scale=self.brownian_variance_1)
+                Z2 = np.random.normal(loc=self.brownian_mean_2, scale=self.brownian_variance_2)
+
+                W1 = Z1
+                W2 = self.rho * Z1 + np.sqrt(1 - self.rho**2) * Z2
+
+                dt = 1/n
+                v[t] = np.maximum(
+                    v[t-1] + self.kappa * (self.theta - v[t-1]) * dt + self.xi * np.sqrt(np.max(v[t-1], 0)) * np.sqrt(dt) * W2,
+                    0
+                )
+
+                predictions[t] = predictions[t-1] * np.exp(
+                    (self.r + 0.3 * trend / predictions[t-1] - 0.5 * v_mean) * dt +
+                    np.sqrt(v_mean) * np.sqrt(dt) * W1
+                )
+
+            return predictions[-1] + self.bias
+        
+        k = 50
+        
+        if "DJEMBES" not in prices:
+            prices["DJEMBES"] = deque()
+
+        fair_value = get_fair_value()
+        
+        order_depth: OrderDepth = state.order_depths["DJEMBES"]
+        best_bid = max(order_depth.buy_orders.keys())
+        best_ask = min(order_depth.sell_orders.keys())
+        mid_price = (best_bid + best_ask) / 2
+
+        if len(history) < 50:
+            print("step1")
+            prices["DJEMBES"].append(mid_price)
+        else:
+            print("step2")
+            prices["DJEMBES"].popleft()
+            prices["DJEMBES"].append(mid_price)
+       
+        traderData = jsonpickle.encode({
+            "price_cache": prices
+        })
+
+        return round(fair_value)
 
 class KelpStrategy(MarketMakingStrategy):
     def get_true_value(self, state: TradingState) -> int:
@@ -440,7 +480,7 @@ class Trader:
         self.strategies = {symbol: clazz(symbol, limits[symbol]) for symbol, clazz in {
             "RAINFOREST_RESIN": RainforestResinStrategy,
             "KELP": KelpStrategy,
-            "SQUID_INK" : SquidInkStrategy,
+            # "SQUID_INK" : SquidInkStrategy,
             "DJEMBES": DjembesStrategy,
         }.items()}
 
