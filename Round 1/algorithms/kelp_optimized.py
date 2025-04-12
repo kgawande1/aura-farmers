@@ -225,6 +225,7 @@ class RainforestResinStrategy(MarketMakingStrategy):
     def get_true_value(self, state: TradingState) -> int:
         return 10000
 
+
 class KelpStrategy(MarketMakingStrategy):
     def get_true_value(self, state: TradingState) -> int:
         order_depth = state.order_depths[self.symbol]
@@ -251,93 +252,29 @@ class KelpStrategy(MarketMakingStrategy):
 
 
 class SquidInkStrategy(MarketMakingStrategy):
+    def __init__(self, symbol: Symbol, limit: int) -> None:
+        super().__init__(symbol, limit)
+        self.price_history = deque(maxlen=100)
+
     def get_true_value(self, state: TradingState) -> int:
-        try:
-            traderData = jsonpickle.decode(state.traderData)
-        except Exception:
-            traderData = {}
-
-        if traderData is None:
-            traderData = {}
-
-        price_cache = traderData.get("price_cache", {})
-        k = 200
-
-        def exponential_moving_average(prices, alpha=0.3):
-            ema = prices[0]
-            for price in prices[1:]:
-                ema = alpha * price + (1 - alpha) * ema
-            return ema
-
-        def get_trend(prices):
-            if len(prices) < 2:
-                return 0
-            x = np.arange(len(prices))
-            y = np.array(prices)
-            slope, _ = np.polyfit(x, y, 1)
-            return slope
-
-        def get_fair_value_merton(
-            T: float, mu: float, lamb: float, sigma: float, v: float,
-            delta: float, prev_prices: List[float], mu_w: float, sigma_w: float,
-            n: int = 100, beta: float = 0.47
-        ):
-            kappa = np.exp(v + 0.5 * pow(delta, 2)) - 1
-            avg = 0
-
-            weights = np.ones(len(prev_prices))  # uniform
-            normalized_weights = weights / np.sum(weights)
-            prev_price = np.dot(normalized_weights, prev_prices)
-
-            ema = exponential_moving_average(prev_prices)
-            trend = get_trend(prev_prices)
-
-            prev_price = ema + trend * 3
-
-            for _ in range(n):
-                W_T = np.random.normal(0, np.sqrt(T))
-                N_T = np.random.poisson(lamb * T)
-                jump_sum = np.sum(np.random.normal(v, delta, size=N_T)) if N_T > 0 else 0.0
-
-                drift = (mu - lamb * kappa - 0.5 * sigma**2) * T
-                diffusion = sigma * W_T
-                log_S = np.log(prev_price) + (drift + diffusion + jump_sum) * beta
-                S_T = np.exp(log_S)
-                avg += S_T
-
-            return 2000 - (avg / n - 2000)
-
-        ink_value = get_fair_value_merton(
-            T=5,
-            mu=0.0336,
-            lamb=1e-10,
-            sigma=9e-6,
-            v=1.0,
-            delta=5.0,
-            prev_prices=list(price_cache.get("SQUID_INK", [2000.0])),
-            mu_w=0.5,
-            sigma_w=0.5
-        )
-
-        if "SQUID_INK" not in price_cache:
-            price_cache["SQUID_INK"] = deque()
-
-        order_depth = state.order_depths["SQUID_INK"]
+        order_depth: OrderDepth = state.order_depths[self.symbol]
         best_bid = max(order_depth.buy_orders.keys())
         best_ask = min(order_depth.sell_orders.keys())
         mid_price = (best_bid + best_ask) / 2
 
-        if len(price_cache["SQUID_INK"]) < k:
-            price_cache["SQUID_INK"].append(mid_price)
-        else:
-            price_cache["SQUID_INK"].popleft()
-            price_cache["SQUID_INK"].append(mid_price)
+        # Cache price
+        self.price_history.append(mid_price)
 
-        state.traderData = jsonpickle.encode({
-            "price_cache": price_cache
-        })
+        if len(self.price_history) < 20:
+            return round(mid_price)
 
-        return round(ink_value)
+        mean = np.mean(self.price_history)
+        std = np.std(self.price_history)
+        z = (mid_price - mean) / std if std != 0 else 0
+
+        # Mean reversion signal
+        true_value = mid_price - z * std
+        return round(true_value)
 
     def act(self, state: TradingState) -> None:
         order_depth = state.order_depths[self.symbol]
@@ -351,26 +288,20 @@ class SquidInkStrategy(MarketMakingStrategy):
         available_to_sell = self.limit + position
 
         signal_strength = abs(fair_value - mid_price)
-
-        # Optional: skip trading if signal is too weak
-        if signal_strength < 1.5:
-            return
-
-        # Confidence-based sizing
-        size = max(1, min(int(signal_strength ** 1.3), self.limit // 2))
+        size = max(1, min(int(signal_strength ** 1.2), self.limit // 2))
 
         if fair_value > mid_price and available_to_buy > 0:
             self.buy(int(mid_price), min(size, available_to_buy))
-
 
         if fair_value < mid_price and available_to_sell > 0:
             self.sell(int(mid_price), min(size, available_to_sell))
 
     def save(self) -> JSON:
-        return {"price_cache": list(getattr(self, "price_cache", []))}
+        return list(self.price_history)
 
     def load(self, data: JSON) -> None:
-        self.trader_data = jsonpickle.encode(data)
+        self.price_history = deque(data, maxlen=100)
+
 
 
 class Trader:
