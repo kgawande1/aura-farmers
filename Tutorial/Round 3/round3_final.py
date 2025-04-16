@@ -310,55 +310,113 @@ class KelpStrategy(MarketMakingStrategy):
 
 
 class SquidInkStrategy(MarketMakingStrategy):
-    def __init__(self, symbol: Symbol, limit: int) -> None:
-        super().__init__(symbol, limit)
-        self.price_history = deque(maxlen=100)
-
     def get_true_value(self, state: TradingState) -> int:
-        order_depth: OrderDepth = state.order_depths[self.symbol]
+        try:
+            traderData = jsonpickle.decode(state.traderData)
+        except Exception as _:
+            traderData = {}
+
+        if traderData is None:
+            traderData = {}
+
+        price_cache = traderData["price_cache"] if "price_cache" in traderData else {}
+        k = 200
+        
+        def exponential_moving_average(prices, alpha=0.3):
+            ema = prices[0]
+            for price in prices[1:]:
+                ema = alpha * price + (1 - alpha) * ema
+            return ema
+    
+        def get_trend(prices):
+            if len(prices) < 2:
+                return 0
+            x = np.arange(len(prices))
+            y = np.array(prices)
+
+            slope, _ = np.polyfit(x, y, 1)
+            return slope
+
+        def get_fair_value_merton(
+                T: float,
+                mu: float, 
+                lamb: float, 
+                sigma: float, 
+                v: float,
+                delta: float, 
+                prev_prices: List[float],
+                mu_w: float,
+                sigma_w: float,
+                n: int = 100,
+                beta: float = 0.47):
+            
+            # n -> number of simulations
+            # m -> number of future walk
+
+            kappa = np.exp(v + 0.5 * pow(delta, 2)) - 1
+            avg = 0
+
+            # get average price
+            weights = np.random.normal(loc=mu_w, scale=sigma_w, size=len(prev_prices))
+            weights = np.ones(shape=len(prev_prices))
+            normalized_weights = weights / np.sum(weights)
+
+            prev_price = np.dot(normalized_weights, prev_prices)
+
+            ema = exponential_moving_average(prices=prev_prices)
+            trend = get_trend(prices=prev_prices)
+
+            prev_price = ema + trend * 3
+
+            for i in range(n):
+
+                W_T = np.random.normal(0, np.sqrt(T)) # brownian motion
+
+                # Number of jumps (Poisson)
+                N_T = np.random.poisson(lamb * T)
+
+                # Sum of jump magnitudes (log-normal in log-space)
+                jump_sum = np.sum(np.random.normal(v, delta, size=N_T)) if N_T > 0 else 0.0
+
+                # Combine terms
+                drift = (mu - lamb * kappa - 0.5 * sigma**2) * T
+                diffusion = sigma * W_T
+
+                log_S = np.log(prev_price) + (drift + diffusion + jump_sum) * beta
+                S_T = np.exp(log_S)
+                avg += S_T
+
+            return 2000 - (avg / n - 2000)
+        
+        ink_value = get_fair_value_merton(
+            T=5,
+            mu=0.0336,#does
+            lamb=0.0000000001,
+            sigma=0.000009,#does
+            v=1.0000000,
+            delta=5.000000,
+            prev_prices= list(price_cache["SQUID_INK"]) if "SQUID_INK" in price_cache else [2000.0],   # FIX: Pass a float instead of the entire price_cache
+            mu_w=0.5,
+            sigma_w=0.5)
+        
+        if "SQUID_INK" not in price_cache:
+            price_cache["SQUID_INK"] = deque()
+        
+        order_depth: OrderDepth = state.order_depths["SQUID_INK"]
         best_bid = max(order_depth.buy_orders.keys())
         best_ask = min(order_depth.sell_orders.keys())
         mid_price = (best_bid + best_ask) / 2
 
-        # Cache price
-        self.price_history.append(mid_price)
-
-        if len(self.price_history) < 20:
-            return round(mid_price)
-
-        mean = np.mean(self.price_history)
-        std = np.std(self.price_history)
-        z = (mid_price - mean) / std if std != 0 else 0
-
-        # Mean reversion signal
-        true_value = mid_price - z * std
-        return round(true_value)
-
-    def act(self, state: TradingState) -> None:
-        order_depth = state.order_depths[self.symbol]
-        best_bid = max(order_depth.buy_orders.keys())
-        best_ask = min(order_depth.sell_orders.keys())
-        mid_price = (best_bid + best_ask) / 2
-
-        fair_value = self.get_true_value(state)
-        position = state.position.get(self.symbol, 0)
-        available_to_buy = self.limit - position
-        available_to_sell = self.limit + position
-
-        signal_strength = abs(fair_value - mid_price)
-        size = max(1, min(int(signal_strength ** 1.2), self.limit // 2))
-
-        if fair_value > mid_price and available_to_buy > 0:
-            self.buy(int(mid_price), min(size, available_to_buy))
-
-        if fair_value < mid_price and available_to_sell > 0:
-            self.sell(int(mid_price), min(size, available_to_sell))
-
-    def save(self) -> JSON:
-        return list(self.price_history)
-
-    def load(self, data: JSON) -> None:
-        self.price_history = deque(data, maxlen=100)
+        if len(price_cache["SQUID_INK"]) < k:
+            price_cache["SQUID_INK"].append(mid_price)
+        else:
+            price_cache["SQUID_INK"].popleft()
+            price_cache["SQUID_INK"].append(mid_price)
+       
+        traderData = jsonpickle.encode({
+            "price_cache": price_cache
+        })
+        return round(ink_value)
 
 
 class BinomialStrategy(MarketMakingStrategy):
@@ -393,8 +451,8 @@ class BinomialStrategy(MarketMakingStrategy):
             "DJEMBES": 100,
             "CROISSANTS": 100,
             "JAMS": 100,
-            "PICNIC_BASKET1": 100,
-            "PICNIC_BASKET2": 100,
+            "PICNIC_BASKET1": 300,
+            "PICNIC_BASKET2": 300,
         }
 
         self.scaling_factor = {
@@ -470,21 +528,6 @@ class BinomialStrategy(MarketMakingStrategy):
 
         curr_price = self.price_history[-1]
         self.fair_price = self.theta * (curr_price * (1 + self.expected_return[self.symbol])) + (1 - self.theta) * (curr_price * (1 - self.expected_return[self.symbol]))
-
-    def parse_trading_history(self, state: TradingState):
-
-        pass
-        
-        # try:
-        #     trader_data = jsonpickle.decode(state.traderData)
-        # except Exception as _:
-        #     trader_data = {}
-        
-        # if trader_data is None:
-        #     return deque(maxlen=100)
-
-        # price_cache = trader_data["price_cache"] if "price_cache" in trader_data else {}
-        # return price_cache[self.symbol] if self.symbol in price_cache else deque(maxlen=100)
 
     def act(self, state: TradingState) -> None:
 
@@ -581,10 +624,6 @@ class BinomialStrategy(MarketMakingStrategy):
         # cache price:
         self.price_history.append(mid_price)
 
-        # print("FAIR VAL: " + str(self.fair_price))
-        # print("MID PRICE: " + str(mid_price))
-        # print("THETA: " + str(self.theta))
-
     def save(self) -> JSON:
         return list(self.price_history)
 
@@ -643,38 +682,41 @@ class BasketArbitrageStrategy(MarketMakingStrategy):
         z1 = z_score(self.pb1_spread_history, spread1)
         z2 = z_score(self.pb2_spread_history, spread2)
 
-        threshold = 1
+        threshold, offset = 1, 0.2
+
+        c1_volume, j1_volume, d1_volume = 6, 3, 1
+        c2_volume, j2_volume = 4, 2
 
         if self.symbol == "CROISSANTS":
 
-            if z1 > threshold:
-                self.buy(croissant, 6)
-            elif z1 < -threshold:
-                self.sell(croissant, 6)
+            if z1 > threshold - offset:
+                self.buy(croissant, c1_volume)
+            elif z1 < -threshold + offset:
+                self.sell(croissant, c1_volume)
 
-            if z2 > threshold:
-                self.buy(croissant, 4)
-            elif z2 < -threshold:
-                self.sell(croissant, 4)
+            if z2 > threshold - offset:
+                self.buy(croissant, c2_volume)
+            elif z2 < -threshold + offset:
+                self.sell(croissant, c2_volume)
 
         elif self.symbol == "JAMS":
 
-            if z1 > threshold:
-                self.buy(jam, 3)
-            elif z1 < -threshold:
-                self.sell(jam, 3)
+            if z1 > threshold - offset:
+                self.buy(jam, j1_volume)
+            elif z1 < -threshold + offset:
+                self.sell(jam, j1_volume)
 
-            if z2 > threshold:
-                self.buy(jam, 2)
-            elif z2 < -threshold:
-                self.sell(jam, 2)
+            if z2 > threshold - offset:
+                self.buy(jam, j2_volume)
+            elif z2 < -threshold + offset:
+                self.sell(jam, j2_volume)
 
         elif self.symbol == "DJEMBES":
 
-            if z1 > threshold:
-                self.buy(djembe, 1)
-            elif z1 < -threshold:
-                self.sell(djembe, 1)
+            if z1 > threshold - offset:
+                self.buy(djembe, d1_volume)
+            elif z1 < -threshold + offset:
+                self.sell(djembe, d1_volume)
 
         self.croissant_data.append(croissant)
         self.djembe_data.append(djembe)
